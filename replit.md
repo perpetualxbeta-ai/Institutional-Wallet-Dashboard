@@ -1,6 +1,6 @@
-# [Project name]
+# Institutional Wallet
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+An institutional digital asset treasury console for reviewing balances and simulating Safe{Core} multisignature approvals.
 
 ## Run & Operate
 
@@ -22,15 +22,23 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/institutional-wallet/src/App.tsx` — single-page treasury console, role switching, proposal modal, transaction queue, and local state transitions.
+- `artifacts/institutional-wallet/src/lib/safe-core.ts` — Safe{Core} Protocol Kit/API Kit integration boundary plus the mock session used by the UI.
+- `artifacts/institutional-wallet/src/index.css` — dark institutional finance theme, typography, grid treatment, and motion utilities.
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- The first build is mock-first: no provider, signer, private key, or wallet connection is required to exercise the UI.
+- Safe{Core} SDK packages are installed behind a small adapter so real Protocol Kit/API Kit connectivity can replace the mock without rewriting dashboard components.
+- Transaction proposals and signature progress live in local React state for fast UI validation; persistence is intentionally deferred.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Admin, Signer, and Viewer role switching from the navigation bar.
+- Mock ETH, USDC, and WBTC treasury balances with a total valuation.
+- Pending transaction queue with signature threshold progress, simulated approval, and execution actions.
+- Transfer proposal modal for Admin and Signer roles.
+- Signer roster, Safe configuration summary, and a local audit log.
 
 ## User preferences
 
@@ -38,7 +46,9 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- The Safe address and all balances are mock data; the UI explicitly labels the console as simulated.
+- A Signer can add one simulated signature per approval click; Admin and Viewer actions are permission-gated by the role selector.
+- Use `pnpm --filter @workspace/institutional-wallet run typecheck` for the frontend check.
 
 ## Pointers
 

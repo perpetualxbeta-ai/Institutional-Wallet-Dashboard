@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Institutional Wallet"
+description = "An institutional digital asset treasury dashboard with role-based multisig approvals, transaction proposals, and mocked Safe{Core} wallet interactions."
+version = "1.0.0"
+id = "artifacts/institutional-wallet"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22945
+
+[services.development]
+run = "pnpm --filter @workspace/institutional-wallet run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/institutional-wallet", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/institutional-wallet/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22945"
+BASE_PATH = "/"
