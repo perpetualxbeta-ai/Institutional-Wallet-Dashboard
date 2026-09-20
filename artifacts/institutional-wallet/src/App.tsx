@@ -31,7 +31,14 @@ import {
   X,
 } from 'lucide-react';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
-import { mockSafeCore, readSepoliaSafe, SEPOLIA_SAFE_ADDRESS, type LiveSafeSnapshot } from '@/lib/safe-core';
+import {
+  mockSafeCore,
+  readSepoliaSafe,
+  readSepoliaSafeQueue,
+  SEPOLIA_SAFE_ADDRESS,
+  type LivePendingTransaction,
+  type LiveSafeSnapshot,
+} from '@/lib/safe-core';
 import { connectInjectedWallet } from '@/lib/wallet';
 
 function formatEth(wei: bigint): string {
@@ -44,6 +51,10 @@ function formatEth(wei: bigint): string {
 function shortAddress(address: string): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
+
+// No live price feed is wired up — this fixed rate is only used to turn a
+// live ETH balance into an illustrative USD figure. It is not a live quote.
+const DEMO_ETH_USD_PRICE = 3293;
 
 const queryClient = new QueryClient();
 
@@ -72,6 +83,8 @@ type QueueItem = {
   created: string;
   proposer: string;
   risk: 'Routine' | 'Review';
+  source: 'demo' | 'live';
+  confirmedBy?: string[];
 };
 
 const initialAssets: Asset[] = [
@@ -81,10 +94,33 @@ const initialAssets: Asset[] = [
 ];
 
 const initialQueue: QueueItem[] = [
-  { id: 1, title: 'Q3 vendor settlement', recipient: '0x71C4…9a2E', amount: '12,500.00', asset: 'USDC', status: 'Needs signature', signatures: 1, required: 3, created: '18 min ago', proposer: 'M. Chen', risk: 'Routine' },
-  { id: 2, title: 'Cold storage rebalance', recipient: '0xA830…4cD1', amount: '18.0000', asset: 'ETH', status: 'Needs signature', signatures: 1, required: 3, created: '42 min ago', proposer: 'N. Patel', risk: 'Review' },
-  { id: 3, title: 'Market maker allocation', recipient: '0x2F08…c813', amount: '1.2500', asset: 'WBTC', status: 'Ready to execute', signatures: 2, required: 3, created: '2 hr ago', proposer: 'M. Chen', risk: 'Routine' },
+  { id: 1, title: 'Q3 vendor settlement', recipient: '0x71C4…9a2E', amount: '12,500.00', asset: 'USDC', status: 'Needs signature', signatures: 1, required: 3, created: '18 min ago', proposer: 'M. Chen', risk: 'Routine', source: 'demo' },
+  { id: 2, title: 'Cold storage rebalance', recipient: '0xA830…4cD1', amount: '18.0000', asset: 'ETH', status: 'Needs signature', signatures: 1, required: 3, created: '42 min ago', proposer: 'N. Patel', risk: 'Review', source: 'demo' },
+  { id: 3, title: 'Market maker allocation', recipient: '0x2F08…c813', amount: '1.2500', asset: 'WBTC', status: 'Ready to execute', signatures: 2, required: 3, created: '2 hr ago', proposer: 'M. Chen', risk: 'Routine', source: 'demo' },
 ];
+
+function mapLiveQueueItem(tx: LivePendingTransaction, index: number): QueueItem {
+  const status: QueueItem['status'] = tx.isExecuted
+    ? 'Executed'
+    : tx.confirmations >= tx.confirmationsRequired
+      ? 'Ready to execute'
+      : 'Needs signature';
+  return {
+    id: -1000 - index,
+    title: `Safe transaction · nonce ${tx.nonce}`,
+    recipient: shortAddress(tx.to),
+    amount: formatEth(tx.valueWei),
+    asset: 'ETH',
+    status,
+    signatures: tx.confirmations,
+    required: tx.confirmationsRequired,
+    created: new Date(tx.submissionDate).toLocaleString(),
+    proposer: 'Sepolia transaction service',
+    risk: 'Review',
+    source: 'live',
+    confirmedBy: tx.confirmedBy,
+  };
+}
 
 const navItems: { label: View; icon: typeof LayoutDashboard; count?: string }[] = [
   { label: 'Overview', icon: LayoutDashboard },
@@ -108,10 +144,12 @@ function Home() {
   const [liveAccount, setLiveAccount] = useState<string | null>(null);
   const [liveStatus, setLiveStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
   const [liveError, setLiveError] = useState('');
+  const [liveQueueNote, setLiveQueueNote] = useState('');
 
   const connectToSepolia = async () => {
     setLiveStatus('connecting');
     setLiveError('');
+    setLiveQueueNote('');
     try {
       const { provider, account } = await connectInjectedWallet();
       const snapshot = await readSepoliaSafe(provider);
@@ -119,6 +157,16 @@ function Home() {
       setLiveSafe(snapshot);
       setLiveStatus('connected');
       showNotice('Connected to Sepolia — showing live Safe data');
+
+      try {
+        const pending = await readSepoliaSafeQueue();
+        setQueue(pending.map(mapLiveQueueItem));
+        setLiveQueueNote(pending.length === 0 ? 'This Safe has no pending transactions on Sepolia right now.' : '');
+      } catch (queueError) {
+        setLiveQueueNote(
+          queueError instanceof Error ? queueError.message : 'Could not load live pending transactions.',
+        );
+      }
     } catch (error) {
       setLiveStatus('error');
       setLiveError(error instanceof Error ? error.message : 'Failed to connect to Sepolia');
@@ -126,9 +174,22 @@ function Home() {
     }
   };
 
-  const totalUsd = useMemo(() => initialAssets.reduce((total, asset) => total + Number(asset.usd.replace(/[$,]/g, '')), 0), []);
+  const assets = useMemo<Asset[]>(() => {
+    if (!liveSafe) return initialAssets;
+    const ethAmount = Number(formatEth(liveSafe.balanceWei));
+    return initialAssets.map((asset) =>
+      asset.symbol === 'ETH'
+        ? {
+            ...asset,
+            balance: formatEth(liveSafe.balanceWei),
+            usd: `$${(ethAmount * DEMO_ETH_USD_PRICE).toLocaleString('en-US', { maximumFractionDigits: 2 })}`,
+          }
+        : asset,
+    );
+  }, [liveSafe]);
+  const totalUsd = useMemo(() => assets.reduce((total, asset) => total + Number(asset.usd.replace(/[$,]/g, '')), 0), [assets]);
   const pendingCount = queue.filter((item) => item.status !== 'Executed').length;
-  const signerCount = 3;
+  const signerCount = liveSafe ? liveSafe.owners.length : 3;
 
   useEffect(() => {
     if (!notice) return;
@@ -149,6 +210,10 @@ function Home() {
       showNotice('Switch to Signer role to add a simulated approval');
       return;
     }
+    if (queue.find((item) => item.id === id)?.source === 'live') {
+      showNotice('This is a live Sepolia transaction — sign it from the Safe app, not this prototype');
+      return;
+    }
     setQueue((current) =>
       current.map((item) => {
         if (item.id !== id || item.signatures >= item.required) return item;
@@ -162,6 +227,10 @@ function Home() {
   const executeTransaction = (id: number) => {
     if (role === 'Viewer') {
       showNotice('Viewer role cannot execute transactions');
+      return;
+    }
+    if (queue.find((item) => item.id === id)?.source === 'live') {
+      showNotice('This is a live Sepolia transaction — execute it from the Safe app, not this prototype');
       return;
     }
     setQueue((current) => current.map((item) => (item.id === id ? { ...item, status: 'Executed' } : item)));
@@ -202,10 +271,11 @@ function Home() {
         asset,
         status: 'Needs signature',
         signatures: 1,
-        required: 3,
+        required: liveSafe ? liveSafe.threshold : 3,
         created: 'just now',
         proposer: role === 'Admin' ? 'You · Admin' : 'You · Signer',
         risk: Number(amount) > 10000 ? 'Review' : 'Routine',
+        source: 'demo',
       },
       ...current,
     ]);
@@ -351,7 +421,7 @@ function Home() {
 
               {activeView === 'Overview' && (
                 <OverviewView
-                  assets={initialAssets}
+                  assets={assets}
                   totalUsd={totalUsd}
                   pendingCount={pendingCount}
                   signerCount={signerCount}
@@ -365,10 +435,11 @@ function Home() {
                   onCopy={copySafeAddress}
                   copiedAddress={copiedAddress}
                   liveSafe={liveSafe}
+                  liveQueueNote={liveQueueNote}
                 />
               )}
               {activeView === 'Transactions' && (
-                <TransactionsView queue={queue} role={role} expandedId={expandedId} setExpandedId={setExpandedId} onApprove={approveTransaction} onExecute={executeTransaction} onPropose={openProposal} />
+                <TransactionsView queue={queue} role={role} expandedId={expandedId} setExpandedId={setExpandedId} onApprove={approveTransaction} onExecute={executeTransaction} onPropose={openProposal} liveSafe={liveSafe} liveQueueNote={liveQueueNote} />
               )}
               {activeView === 'Signers' && <SignersView role={role} onCopy={copySafeAddress} copiedAddress={copiedAddress} liveSafe={liveSafe} />}
               {activeView === 'Audit log' && <AuditView />}
@@ -383,9 +454,9 @@ function Home() {
 }
 
 function OverviewView({
-  assets, totalUsd, pendingCount, signerCount, role, queue, expandedId, setExpandedId, onApprove, onExecute, onPropose, onCopy, copiedAddress, liveSafe,
+  assets, totalUsd, pendingCount, signerCount, role, queue, expandedId, setExpandedId, onApprove, onExecute, onPropose, onCopy, copiedAddress, liveSafe, liveQueueNote,
 }: {
-  assets: Asset[]; totalUsd: number; pendingCount: number; signerCount: number; role: Role; queue: QueueItem[]; expandedId: number | null; setExpandedId: (id: number | null) => void; onApprove: (id: number) => void; onExecute: (id: number) => void; onPropose: () => void; onCopy: () => void; copiedAddress: boolean; liveSafe: LiveSafeSnapshot | null;
+  assets: Asset[]; totalUsd: number; pendingCount: number; signerCount: number; role: Role; queue: QueueItem[]; expandedId: number | null; setExpandedId: (id: number | null) => void; onApprove: (id: number) => void; onExecute: (id: number) => void; onPropose: () => void; onCopy: () => void; copiedAddress: boolean; liveSafe: LiveSafeSnapshot | null; liveQueueNote: string;
 }) {
   return (
     <>
@@ -418,7 +489,7 @@ function OverviewView({
           <div className="flex items-center justify-between border-b border-border px-5 py-4 sm:px-6">
             <div>
               <div className="flex items-center gap-2"><h3 className="text-[14px] font-extrabold tracking-[-0.025em]">Treasury assets</h3><span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground">3 assets</span></div>
-              <p className="mt-1 text-[11px] text-muted-foreground">Live balances from the simulated Safe</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">{liveSafe ? 'ETH balance is live from Sepolia' : 'Live balances from the simulated Safe'}</p>
             </div>
             <button className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} data-testid="button-assets-options" aria-label="Asset options"><MoreHorizontal size={17} /></button>
           </div>
@@ -427,32 +498,18 @@ function OverviewView({
           </div>
           <div className="flex items-center gap-2 border-t border-border bg-muted/35 px-5 py-3.5 text-[10px] text-muted-foreground sm:px-6">
             <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-            Valuations based on simulated market prices · refreshed moments ago
+            {liveSafe
+              ? `ETH balance read from Sepolia · USD values use a fixed demo price of $${DEMO_ETH_USD_PRICE.toLocaleString('en-US')}/ETH`
+              : 'Valuations based on simulated market prices · refreshed moments ago'}
           </div>
         </section>
 
-        <section className="rounded-xl border border-border bg-card p-5 shadow-[0_12px_38px_hsl(222_28%_13%_/_0.035)] animate-rise-in animation-delay-2 sm:p-6">
-          <div className="flex items-start justify-between">
-            <div><h3 className="text-[14px] font-extrabold tracking-[-0.025em]">Signing health</h3><p className="mt-1 text-[11px] text-muted-foreground">A quick view of the quorum</p></div>
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary"><Fingerprint size={16} /></div>
-          </div>
-          <div className="mt-7 flex items-center gap-5">
-            <div className="relative flex h-[104px] w-[104px] shrink-0 items-center justify-center rounded-full" style={{ background: 'conic-gradient(hsl(var(--primary)) 0 66%, hsl(var(--muted)) 66% 100%)' }}>
-              <div className="flex h-[82px] w-[82px] flex-col items-center justify-center rounded-full bg-card"><span className="text-[24px] font-extrabold tracking-[-0.08em]">2<span className="text-muted-foreground">/3</span></span><span className="font-mono text-[8px] uppercase tracking-[.12em] text-muted-foreground">threshold</span></div>
-            </div>
-            <div className="space-y-3">
-              <SignerMini initials="MC" name="Morgan Chen" state="Signed" />
-              <SignerMini initials="NP" name="Nisha Patel" state="Signed" />
-              <SignerMini initials="JL" name="Jon Lee" state="Awaiting" muted />
-            </div>
-          </div>
-          <div className="mt-7 flex items-start gap-2.5 rounded-lg border border-accent/30 bg-accent/10 p-3.5"><Clock3 size={14} className="mt-0.5 shrink-0 text-[#bd7b04]" /><p className="text-[10px] leading-4 text-foreground/70">Two proposals are waiting for the next signature. Review before execution.</p></div>
-        </section>
+        <SigningHealthCard liveSafe={liveSafe} queue={queue} pendingCount={pendingCount} />
       </div>
 
       <section className="mt-6 animate-rise-in animation-delay-3">
-        <div className="mb-3 flex items-end justify-between"><div><h3 className="text-[14px] font-extrabold tracking-[-0.025em]">Needs attention</h3><p className="mt-1 text-[11px] text-muted-foreground">Transactions moving through the signing policy</p></div><span className="font-mono text-[10px] text-muted-foreground">{pendingCount.toString().padStart(2, '0')} OPEN</span></div>
-        {queue.length === 0 ? <EmptyQueue /> : <TransactionTable queue={queue} role={role} expandedId={expandedId} setExpandedId={setExpandedId} onApprove={onApprove} onExecute={onExecute} />}
+        <div className="mb-3 flex items-end justify-between"><div><h3 className="text-[14px] font-extrabold tracking-[-0.025em]">Needs attention</h3><p className="mt-1 text-[11px] text-muted-foreground">{liveSafe ? 'Live pending transactions from the Sepolia Safe' : 'Transactions moving through the signing policy'}</p></div><span className="font-mono text-[10px] text-muted-foreground">{pendingCount.toString().padStart(2, '0')} OPEN</span></div>
+        {queue.length === 0 ? <EmptyQueue note={liveQueueNote} /> : <TransactionTable queue={queue} role={role} expandedId={expandedId} setExpandedId={setExpandedId} onApprove={onApprove} onExecute={onExecute} />}
       </section>
     </>
   );
@@ -467,12 +524,66 @@ function AssetRow({ asset }: { asset: Asset }) {
   return <div className="flex items-center gap-3.5 px-5 py-4 transition-colors hover:bg-muted/35 sm:px-6" data-testid={`row-asset-${asset.symbol.toLowerCase()}`}><div className="flex h-9 w-9 items-center justify-center rounded-full text-[15px] font-bold text-white shadow-inner" style={{ backgroundColor: asset.accent }}>{asset.initials}</div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><p className="text-[12px] font-extrabold">{asset.symbol}</p><span className="text-[10px] text-muted-foreground">{asset.name}</span></div><p className="mt-1 font-mono text-[11px] text-muted-foreground tabular-nums">{asset.balance} {asset.symbol}</p></div><div className="text-right"><p className="text-[12px] font-bold tabular-nums">{asset.usd}</p><p className="mt-1 text-[10px] text-muted-foreground">100% available</p></div><ChevronRight size={15} className="text-muted-foreground/50" /></div>;
 }
 
+function SigningHealthCard({ liveSafe, queue, pendingCount }: { liveSafe: LiveSafeSnapshot | null; queue: QueueItem[]; pendingCount: number }) {
+  const primaryLiveItem = liveSafe
+    ? queue.find((item) => item.source === 'live' && item.status !== 'Executed')
+    : undefined;
+
+  const healthPercent = liveSafe ? (primaryLiveItem ? Math.round((primaryLiveItem.signatures / primaryLiveItem.required) * 100) : 0) : 66;
+  const healthSigned = liveSafe ? (primaryLiveItem?.signatures ?? 0) : 2;
+  const healthRequired = liveSafe ? (primaryLiveItem?.required ?? liveSafe.threshold) : 3;
+
+  const signers = liveSafe
+    ? liveSafe.owners.map((owner) => {
+        const signed = primaryLiveItem ? (primaryLiveItem.confirmedBy ?? []).includes(owner) : false;
+        return {
+          key: owner,
+          initials: 'ΞX',
+          name: shortAddress(owner),
+          state: primaryLiveItem ? (signed ? 'Signed' : 'Awaiting') : 'On-chain owner',
+          muted: primaryLiveItem ? !signed : false,
+        };
+      })
+    : [
+        { key: 'MC', initials: 'MC', name: 'Morgan Chen', state: 'Signed', muted: false },
+        { key: 'NP', initials: 'NP', name: 'Nisha Patel', state: 'Signed', muted: false },
+        { key: 'JL', initials: 'JL', name: 'Jon Lee', state: 'Awaiting', muted: true },
+      ];
+
+  const footnote = liveSafe
+    ? primaryLiveItem
+      ? `Nonce ${primaryLiveItem.title.split('nonce ')[1] ?? ''} needs ${Math.max(healthRequired - healthSigned, 0)} more signature${healthRequired - healthSigned === 1 ? '' : 's'} on Sepolia.`
+      : 'No pending Sepolia transaction is currently open for signature.'
+    : `${pendingCount} proposal${pendingCount === 1 ? ' is' : 's are'} waiting for the next signature. Review before execution.`;
+
+  return (
+    <section className="rounded-xl border border-border bg-card p-5 shadow-[0_12px_38px_hsl(222_28%_13%_/_0.035)] animate-rise-in animation-delay-2 sm:p-6">
+      <div className="flex items-start justify-between">
+        <div><h3 className="text-[14px] font-extrabold tracking-[-0.025em]">Signing health</h3><p className="mt-1 text-[11px] text-muted-foreground">{liveSafe ? 'Live quorum on Sepolia' : 'A quick view of the quorum'}</p></div>
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary"><Fingerprint size={16} /></div>
+      </div>
+      <div className="mt-7 flex items-center gap-5">
+        <div className="relative flex h-[104px] w-[104px] shrink-0 items-center justify-center rounded-full" style={{ background: `conic-gradient(hsl(var(--primary)) 0 ${healthPercent}%, hsl(var(--muted)) ${healthPercent}% 100%)` }}>
+          <div className="flex h-[82px] w-[82px] flex-col items-center justify-center rounded-full bg-card"><span className="text-[24px] font-extrabold tracking-[-0.08em]">{healthSigned}<span className="text-muted-foreground">/{healthRequired}</span></span><span className="font-mono text-[8px] uppercase tracking-[.12em] text-muted-foreground">threshold</span></div>
+        </div>
+        <div className="space-y-3">
+          {signers.map((signer) => (
+            <SignerMini key={signer.key} initials={signer.initials} name={signer.name} state={signer.state} muted={signer.muted} />
+          ))}
+        </div>
+      </div>
+      <div className="mt-7 flex items-start gap-2.5 rounded-lg border border-accent/30 bg-accent/10 p-3.5"><Clock3 size={14} className="mt-0.5 shrink-0 text-[#bd7b04]" /><p className="text-[10px] leading-4 text-foreground/70">{footnote}</p></div>
+    </section>
+  );
+}
+
 function SignerMini({ initials, name, state, muted = false }: { initials: string; name: string; state: string; muted?: boolean }) {
   return <div className={`flex items-center gap-2.5 ${muted ? 'opacity-55' : ''}`}><div className="flex h-6 w-6 items-center justify-center rounded-full bg-muted font-mono text-[8px] font-bold text-muted-foreground">{initials}</div><span className="text-[10px] font-semibold">{name}</span><span className={`ml-auto flex items-center gap-1 text-[9px] font-semibold ${muted ? 'text-muted-foreground' : 'text-primary'}`}>{muted ? <Clock3 size={10} /> : <Check size={10} strokeWidth={3} />}{state}</span></div>;
 }
 
-function TransactionsView({ queue, role, expandedId, setExpandedId, onApprove, onExecute, onPropose }: { queue: QueueItem[]; role: Role; expandedId: number | null; setExpandedId: (id: number | null) => void; onApprove: (id: number) => void; onExecute: (id: number) => void; onPropose: () => void }) {
-  return <div className="animate-rise-in"><div className="mb-8 flex flex-col justify-between gap-4 md:flex-row md:items-end"><div><p className="font-mono text-[10px] uppercase tracking-[.18em] text-primary">Transaction control</p><h2 className="mt-2 text-[29px] font-extrabold tracking-[-.055em]">Signing queue</h2><p className="mt-2 text-[13px] text-muted-foreground">Review every transfer before it reaches execution.</p></div><button onClick={onPropose} className="flex w-fit items-center gap-2 rounded-lg bg-primary px-3.5 py-2.5 text-[11px] font-bold text-primary-foreground hover:-translate-y-0.5" data-testid="button-open-proposal-transactions"><Plus size={15} /> Propose transfer</button></div><div className="mb-4 flex flex-wrap items-center gap-2"><span className="rounded-full border border-primary/25 bg-primary/10 px-2.5 py-1 font-mono text-[9px] font-medium uppercase tracking-[.1em] text-primary">All transactions · {queue.length.toString().padStart(2, '0')}</span><span className="rounded-full border border-border bg-card px-2.5 py-1 font-mono text-[9px] font-medium uppercase tracking-[.1em] text-muted-foreground">Policy 2 of 3</span></div><TransactionTable queue={queue} role={role} expandedId={expandedId} setExpandedId={setExpandedId} onApprove={onApprove} onExecute={onExecute} /></div>;
+function TransactionsView({ queue, role, expandedId, setExpandedId, onApprove, onExecute, onPropose, liveSafe, liveQueueNote }: { queue: QueueItem[]; role: Role; expandedId: number | null; setExpandedId: (id: number | null) => void; onApprove: (id: number) => void; onExecute: (id: number) => void; onPropose: () => void; liveSafe: LiveSafeSnapshot | null; liveQueueNote: string }) {
+  const policyLabel = liveSafe ? `Policy ${liveSafe.threshold} of ${liveSafe.owners.length}` : 'Policy 2 of 3';
+  return <div className="animate-rise-in"><div className="mb-8 flex flex-col justify-between gap-4 md:flex-row md:items-end"><div><p className="font-mono text-[10px] uppercase tracking-[.18em] text-primary">Transaction control</p><h2 className="mt-2 text-[29px] font-extrabold tracking-[-.055em]">Signing queue</h2><p className="mt-2 text-[13px] text-muted-foreground">{liveSafe ? 'Live pending transactions from the Sepolia Safe.' : 'Review every transfer before it reaches execution.'}</p></div><button onClick={onPropose} className="flex w-fit items-center gap-2 rounded-lg bg-primary px-3.5 py-2.5 text-[11px] font-bold text-primary-foreground hover:-translate-y-0.5" data-testid="button-open-proposal-transactions"><Plus size={15} /> Propose transfer</button></div><div className="mb-4 flex flex-wrap items-center gap-2"><span className="rounded-full border border-primary/25 bg-primary/10 px-2.5 py-1 font-mono text-[9px] font-medium uppercase tracking-[.1em] text-primary">All transactions · {queue.length.toString().padStart(2, '0')}</span><span className="rounded-full border border-border bg-card px-2.5 py-1 font-mono text-[9px] font-medium uppercase tracking-[.1em] text-muted-foreground">{policyLabel}</span></div>{queue.length === 0 ? <EmptyQueue note={liveQueueNote} /> : <TransactionTable queue={queue} role={role} expandedId={expandedId} setExpandedId={setExpandedId} onApprove={onApprove} onExecute={onExecute} />}</div>;
 }
 
 function TransactionTable({ queue, role, expandedId, setExpandedId, onApprove, onExecute }: { queue: QueueItem[]; role: Role; expandedId: number | null; setExpandedId: (id: number | null) => void; onApprove: (id: number) => void; onExecute: (id: number) => void }) {
@@ -486,8 +597,8 @@ function TransactionRow({ item, role, expanded, onToggle, onApprove, onExecute }
   return <div className={`border-b border-border last:border-0 ${expanded ? 'bg-muted/20' : ''}`} data-testid={`row-transaction-${item.id}`}><button onClick={onToggle} className="grid w-full grid-cols-1 gap-3 px-5 py-4 text-left hover:bg-muted/35 sm:grid-cols-[minmax(210px,1.35fr)_minmax(120px,.8fr)_minmax(120px,.7fr)_minmax(130px,.8fr)_38px] sm:items-center sm:gap-4" data-testid={`button-expand-transaction-${item.id}`}><div className="flex items-center gap-3"><div className="flex h-8 w-8 items-center justify-center rounded-full text-[11px] font-bold text-white" style={{ backgroundColor: asset?.accent }}>{asset?.initials}</div><div className="min-w-0"><p className="truncate text-[12px] font-bold">{item.title}</p><p className="mt-1 font-mono text-[9px] text-muted-foreground">{item.recipient} <span className="mx-1 text-border">/</span> {item.created}</p></div></div><div className="flex items-center justify-between sm:block"><span className="font-mono text-[9px] uppercase text-muted-foreground sm:hidden">Amount</span><p className="font-mono text-[12px] font-medium tabular-nums">{item.amount} <span className="text-[10px] text-muted-foreground">{item.asset}</span></p></div><div className="flex items-center justify-between sm:block"><span className="font-mono text-[9px] uppercase text-muted-foreground sm:hidden">Signatures</span><div className="flex items-center gap-2"><div className="h-1.5 w-[48px] overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-all duration-500" style={{ width: `${(item.signatures / item.required) * 100}%` }} /></div><span className="font-mono text-[10px] font-medium">{item.signatures}/{item.required}</span></div></div><div className="flex items-center justify-between sm:block"><span className="font-mono text-[9px] uppercase text-muted-foreground sm:hidden">State</span><span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[9px] font-bold ${executed ? 'bg-muted text-muted-foreground' : complete ? 'bg-primary/10 text-primary' : 'bg-accent/15 text-[#9b6705]'}`}><span className={`h-1.5 w-1.5 rounded-full ${executed ? 'bg-muted-foreground' : complete ? 'bg-primary' : 'bg-accent'}`} />{item.status}</span></div><ChevronRight size={15} className={`justify-self-end text-muted-foreground transition-transform ${expanded ? 'rotate-90' : ''}`} /></button>{expanded && <div className="border-t border-border px-5 pb-5 pt-4 sm:pl-[68px]"><div className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end"><div className="grid grid-cols-2 gap-x-5 gap-y-3 text-[10px]"><div><p className="font-mono uppercase tracking-[.1em] text-muted-foreground">Proposed by</p><p className="mt-1 font-semibold">{item.proposer}</p></div><div><p className="font-mono uppercase tracking-[.1em] text-muted-foreground">Review tier</p><p className="mt-1 font-semibold">{item.risk} transfer</p></div><div><p className="font-mono uppercase tracking-[.1em] text-muted-foreground">Policy</p><p className="mt-1 font-semibold">2 of 3 signatures</p></div><div><p className="font-mono uppercase tracking-[.1em] text-muted-foreground">Destination</p><p className="mt-1 font-mono font-medium">{item.recipient}</p></div></div>{!executed && <div className="flex gap-2 sm:justify-end">{!complete && <button onClick={(event) => { event.stopPropagation(); onApprove(item.id); }} className="flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-[10px] font-bold text-primary hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-45" disabled={role !== 'Signer'} data-testid={`button-approve-transaction-${item.id}`}><Fingerprint size={13} /> {role === 'Signer' ? 'Add signature' : 'Signer approval'}</button>}{complete && <button onClick={(event) => { event.stopPropagation(); onExecute(item.id); }} className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-[10px] font-bold text-primary-foreground hover:-translate-y-0.5" data-testid={`button-execute-transaction-${item.id}`}><ArrowUpRight size={13} /> Execute</button>}</div>}</div></div>}</div>;
 }
 
-function EmptyQueue() {
-  return <div className="rounded-xl border border-dashed border-border bg-card px-6 py-16 text-center"><div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-muted text-muted-foreground"><FileCheck2 size={18} /></div><h4 className="mt-4 text-[13px] font-bold">Signing queue is clear</h4><p className="mt-1 text-[11px] text-muted-foreground">New transfer proposals will appear here for review.</p></div>;
+function EmptyQueue({ note }: { note?: string }) {
+  return <div className="rounded-xl border border-dashed border-border bg-card px-6 py-16 text-center"><div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-muted text-muted-foreground"><FileCheck2 size={18} /></div><h4 className="mt-4 text-[13px] font-bold">Signing queue is clear</h4><p className="mt-1 text-[11px] text-muted-foreground">{note || 'New transfer proposals will appear here for review.'}</p></div>;
 }
 
 function SignersView({ role, onCopy, copiedAddress, liveSafe }: { role: Role; onCopy: () => void; copiedAddress: boolean; liveSafe: LiveSafeSnapshot | null }) {
