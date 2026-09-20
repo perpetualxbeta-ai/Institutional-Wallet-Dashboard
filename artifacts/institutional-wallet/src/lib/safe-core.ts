@@ -151,4 +151,4 @@ export const mockSafeCore = {
   owners: 3,
 };
 
- //wire up Sepolia connection
+ //fix safe-core ts and wire up Sepolia connection
