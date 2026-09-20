@@ -2,6 +2,7 @@ import path from 'path';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
+import { nodePolyfills } from 'vite-plugin-node-polyfills';
 
 import runtimeErrorOverlay from '@replit/vite-plugin-runtime-error-modal';
 
@@ -32,6 +33,10 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
+    // @safe-global/protocol-kit (and its deps) assume Node's Buffer/global
+    // exist; this polyfills just enough of the Node runtime for it to work
+    // in the browser bundle without dragging in fs/net/etc.
+    nodePolyfills({ include: ['buffer'], globals: { Buffer: true, global: false, process: false } }),
     runtimeErrorOverlay(),
     ...(process.env.NODE_ENV !== 'production' &&
     process.env.REPL_ID !== undefined
