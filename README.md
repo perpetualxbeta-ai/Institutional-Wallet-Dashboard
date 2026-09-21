@@ -28,3 +28,26 @@ Ensure you have Node.js and `pnpm` installed:
 
 ```bash
 npm install -g pnpm
+
+### Installation
+
+1. **Clone the repository**:
+   ```bash
+   git clone [https://github.com/perpetualxbeta-ai/Institutional-Wallet-Dashboard.git](https://github.com/perpetualxbeta-ai/Institutional-Wallet-Dashboard.git)
+   cd Institutional-Wallet-Dashboard
+
+pnpm install
+
+cp artifacts/.env.example .env
+
+📖 How It Works
+Initiate Transaction: Create a transfer or smart contract execution request from an institutional vault.
+
+Policy Verification: The system checks if the transaction violates pre-configured threshold or daily volume policies.
+
+Multi-Sig Workflow: Required signers receive approval requests to sign off on the transaction quorum.
+
+Mock Execution: Once the signature threshold is satisfied, the transaction is submitted to the mock blockchain interface and assigned a simulated transaction hash.
+
+📄 License
+Distributed under the MIT License. See LICENSE for more information.
