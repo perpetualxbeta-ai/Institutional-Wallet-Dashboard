@@ -1,6 +1,6 @@
 # Institutional Wallet Dashboard
 
-A vibe-coded, interactive dashboard designed to demonstrate and explore how institutional-grade crypto wallets operate, complete with a mock interface to simulated blockchain interactions.
+A vibe-coded, interactive dashboard experiment designed to demonstrate and explore how institutional-grade crypto wallets operate, complete with a mock interface to simulated blockchain interactions.
 
 ## 📌 Overview
 
